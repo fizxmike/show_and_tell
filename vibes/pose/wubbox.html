@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Pose Animator v4.0 (Fixed Controls)</title>
+    <style>
+        :root { --accent: #f43f5e; --bg: #000; --panel: #1a1a1a; --text: #eee; --select: #4ade80; }
+        
+        html, body {
+            margin: 0; padding: 0;
+            background: var(--bg); color: var(--text);
+            font-family: system-ui, -apple-system, sans-serif;
+            width: 100%; height: 100%;
+            overflow: hidden; touch-action: none; position: fixed;
+        }
+
+        .hidden { display: none !important; }
+        .screen { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+        
+        /* SETUP */
+        #setup-screen { 
+            background: var(--panel); z-index: 30; 
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            padding: 20px;
+        }
+        .input-group { width: 100%; max-width: 400px; margin-bottom: 15px; }
+        textarea { width: 100%; height: 80px; background: #111; border: 1px solid #444; color: var(--select); font-family: monospace; padding: 10px; border-radius: 6px; }
+        button { padding: 15px; background: var(--accent); color: white; border: none; border-radius: 8px; font-weight: bold; width: 100%; max-width: 400px; font-size: 1rem; }
+
+        /* CALIBRATION */
+        #calibration-screen { background: #111; z-index: 20; }
+        #calib-canvas { width: 100%; height: 100%; display: block; transform: rotateY(180deg); } /* MIRROR FIX */
+        
+        #calib-hud {
+            position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%);
+            width: 90%; max-width: 400px;
+            background: rgba(20, 20, 20, 0.9);
+            border: 1px solid #333;
+            padding: 15px; border-radius: 12px;
+            display: flex; flex-direction: column; gap: 10px;
+            z-index: 25;
+        }
+        .hud-row { display: flex; gap: 10px; }
+        .btn-green { background: var(--select); color: #000; flex: 1; }
+        .btn-gray { background: #333; color: #fff; flex: 1; }
+
+        /* LIVE */
+        #app-screen { z-index: 10; background: #000; }
+        video, #output_canvas { position: absolute; top: 0; left: 0; transform: rotateY(180deg); width: 100%; height: 100%; object-fit: cover; }
+        #live-controls { position: absolute; top: 15px; left: 15px; z-index: 50; }
+        .btn-sm { padding: 8px 12px; font-size: 0.8rem; background: #333; color: white; border: none; border-radius: 4px; }
+    </style>
+</head>
+<body>
+
+    <div id="setup-screen" class="screen">
+        <h1 style="color:var(--accent); margin-top:0;">Pose Animator v4</h1>
+        
+        <div class="input-group">
+            <label style="color:#888;">1. Sprite Sheet</label>
+            <input type="file" id="file-input" accept="image/*" style="background:#222; padding:10px; width:100%;">
+        </div>
+        
+        <div class="input-group">
+            <label style="color:#888;">2. Data</label>
+            <textarea id="json-input" placeholder="Paste 'const parts = ...'"></textarea>
+        </div>
+
+        <button id="load-btn">Start Calibration</button>
+    </div>
+
+    <div id="calibration-screen" class="screen hidden">
+        <canvas id="calib-canvas"></canvas>
+        
+        <div id="calib-hud">
+            <div style="text-align:center;">
+                <span id="part-name" style="color:var(--select); font-weight:bold; font-size:1.2rem;">SELECT A PART</span>
+                <div style="font-size:0.8rem; color:#888; margin-top:5px;">Double-Tap Stick Figure to Select.<br>Pinch/Twist to Scale & Rotate.</div>
+            </div>
+            <div class="hud-row">
+                <button id="copy-calib-btn" class="btn-gray">Copy Calibration</button>
+                <button id="finish-btn" class="btn-green">Start Camera</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="app-screen" class="screen hidden">
+        <div id="live-controls">
+            <button class="btn-sm" onclick="location.reload()">Restart</button>
+            <button class="btn-sm" id="toggle-skel">Toggle Skeleton</button>
+        </div>
+        <video id="webcam" autoplay playsinline></video>
+        <canvas id="output_canvas"></canvas>
+    </div>
+
+    <script type="module">
+        import { PoseLandmarker, FilesetResolver } from "https://cdn.skypack.dev/@mediapipe/tasks-vision@0.10.0";
+
+        let poseLandmarker;
+        let spriteImg = new Image();
+        let parts = {};
+        
+        // Calibration Data: { x, y, rot, scale }
+        let calibration = {}; 
+        
+        // Runtime Cache for Rotation math (Fixes the "Diagonal" drag issue)
+        let renderRotations = {}; 
+
+        const cvs = { calib: document.getElementById('calib-canvas'), live: document.getElementById('output_canvas') };
+        const ctx = { calib: cvs.calib.getContext('2d'), live: cvs.live.getContext('2d') };
+        const video = document.getElementById('webcam');
+
+        // DUMMY POSE (Normalized) - Note: Left/Right standard naming.
+        const DUMMY = {
+            nose: {x: 0.5, y: 0.15},
+            leftShoulder: {x: 0.65, y: 0.25}, rightShoulder: {x: 0.35, y: 0.25},
+            leftElbow: {x: 0.75, y: 0.45},    rightElbow: {x: 0.25, y: 0.45},
+            leftWrist: {x: 0.85, y: 0.35},    rightWrist: {x: 0.15, y: 0.35},
+            leftHip: {x: 0.6, y: 0.55},      rightHip: {x: 0.4, y: 0.55},
+            leftKnee: {x: 0.65, y: 0.75},      rightKnee: {x: 0.35, y: 0.75},
+            leftAnkle: {x: 0.65, y: 0.92},     rightAnkle: {x: 0.35, y: 0.92}
+        };
+
+        /* --- SETUP --- */
+        document.getElementById('load-btn').addEventListener('click', () => {
+            const f = document.getElementById('file-input').files[0];
+            const j = document.getElementById('json-input').value;
+            if(!f || !j) return alert("Missing Data");
+
+            try { parts = JSON.parse(j.replace(/const\s+\w+\s*=\s*/, '').replace(/;$/, '')); } 
+            catch(e) { return alert("JSON Error"); }
+
+            // Init Calibration Defaults
+            Object.keys(parts).forEach(k => calibration[k] = { x:0, y:0, rot:0, scale:1.0 });
+
+            const r = new FileReader();
+            r.onload = e => {
+                spriteImg.src = e.target.result;
+                spriteImg.onload = () => {
+                    document.getElementById('setup-screen').classList.add('hidden');
+                    startCalibration();
+                }
+            };
+            r.readAsDataURL(f);
+        });
+
+        /* --- CALIBRATION --- */
+        let selPart = null;
+        let viewW, viewH;
+
+        function startCalibration() {
+            document.getElementById('calibration-screen').classList.remove('hidden');
+            resize();
+            window.addEventListener('resize', resize);
+            requestAnimationFrame(calibLoop);
+        }
+
+        function resize() {
+            viewW = window.innerWidth; viewH = window.innerHeight;
+            cvs.calib.width = viewW; cvs.calib.height = viewH;
+            cvs.live.width = viewW; cvs.live.height = viewH;
+        }
+
+        function calibLoop() {
+            if(document.getElementById('calibration-screen').classList.contains('hidden')) return;
+            
+            ctx.calib.fillStyle = "#1a1a1a";
+            ctx.calib.fillRect(0,0,viewW,viewH);
+
+            // Draw Sprite Underlay
+            drawSystem(ctx.calib, DUMMY, viewW, viewH, true);
+            
+            // Draw Skeleton Overlay
+            drawSkeleton(ctx.calib, DUMMY, viewW, viewH);
+
+            requestAnimationFrame(calibLoop);
+        }
+
+        /* --- TOUCH LOGIC (THE FIXES) --- */
+        const pointers = new Map();
+        let gestureStart = null;
+        let lastTap = 0;
+
+        // Fix Coordinates for Mirrored Canvas
+        const getXY = (e) => {
+            const rect = cvs.calib.getBoundingClientRect();
+            // MIRROR FIX: Flip X coordinate because canvas is rotated 180Y
+            return { 
+                x: rect.width - (e.clientX - rect.left), 
+                y: e.clientY - rect.top 
+            };
+        };
+
+        cvs.calib.addEventListener('pointerdown', e => {
+            cvs.calib.setPointerCapture(e.pointerId);
+            const p = getXY(e);
+            pointers.set(e.pointerId, p);
+
+            // Double Tap Selection
+            if(pointers.size === 1) {
+                const now = Date.now();
+                if(now - lastTap < 300) hitTest(p.x, p.y);
+                lastTap = now;
+            }
+
+            if(selPart) initGesture();
+        });
+
+        cvs.calib.addEventListener('pointermove', e => {
+            if(!pointers.has(e.pointerId)) return;
+            pointers.set(e.pointerId, getXY(e));
+            if(selPart && gestureStart) updateGesture();
+        });
+
+        const endG = (e) => {
+            pointers.delete(e.pointerId);
+            if(pointers.size === 0) gestureStart = null;
+            else if(selPart) initGesture();
+        };
+        cvs.calib.addEventListener('pointerup', endG);
+        cvs.calib.addEventListener('pointercancel', endG);
+
+        function hitTest(x, y) {
+            let minD = 120; // Hit radius
+            let hit = null;
+            const p = (k) => ({x: DUMMY[k].x*viewW, y: DUMMY[k].y*viewH});
+
+            const check = (k, px, py) => {
+                if(!parts[k]) return;
+                const d = Math.hypot(px-x, py-y);
+                if(d < minD) { minD=d; hit=k; }
+            };
+
+            // Nodes
+            check('head', p('nose').x, p('nose').y);
+            check('torso', p('leftShoulder').x, p('leftShoulder').y+50);
+            
+            // Bones (Midpoints)
+            const checkB = (k, s, e) => check(k, (p(s).x+p(e).x)/2, (p(s).y+p(e).y)/2);
+            checkB('leftUpperArm','leftShoulder','leftElbow'); checkB('leftLowerArm','leftElbow','leftWrist');
+            checkB('rightUpperArm','rightShoulder','rightElbow'); checkB('rightLowerArm','rightElbow','rightWrist');
+            checkB('leftUpperLeg','leftHip','leftKnee'); checkB('leftLowerLeg','leftKnee','leftAnkle');
+            checkB('rightUpperLeg','rightHip','rightKnee'); checkB('rightLowerLeg','rightKnee','rightAnkle');
+
+            if(hit) {
+                selPart = hit;
+                const el = document.getElementById('part-name');
+                el.innerText = hit.replace(/([A-Z])/g, ' $1').toUpperCase();
+                el.style.color = "#4ade80";
+            }
+        }
+
+        function getGestureState() {
+            const pts = Array.from(pointers.values());
+            let cx=0, cy=0;
+            pts.forEach(p => { cx+=p.x; cy+=p.y; });
+            cx /= pts.length; cy /= pts.length;
+            
+            let dist=0, ang=0;
+            if(pts.length === 2) {
+                dist = Math.hypot(pts[0].x-pts[1].x, pts[0].y-pts[1].y);
+                ang = Math.atan2(pts[0].y-pts[1].y, pts[0].x-pts[1].x);
+            }
+            return { cx, cy, dist, ang };
+        }
+
+        function initGesture() {
+            const s = getGestureState();
+            gestureStart = { ...s, initCal: { ...calibration[selPart] } };
+        }
+
+        function updateGesture() {
+            const curr = getGestureState();
+            const start = gestureStart;
+            const init = start.initCal;
+            const cal = calibration[selPart];
+
+            // 1. POSITION (Inverse Rotation Fix)
+            const dx = curr.cx - start.cx;
+            const dy = curr.cy - start.cy;
+
+            // Retrieve the TOTAL visual rotation calculated in the last render frame
+            const visualRotRad = renderRotations[selPart] || 0;
+            
+            // To move the part "UP" visually, we must apply the drag vector
+            // against the inverse of its rotation.
+            const invRot = -visualRotRad;
+            
+            cal.x = init.x + (dx * Math.cos(invRot) - dy * Math.sin(invRot));
+            cal.y = init.y + (dx * Math.sin(invRot) + dy * Math.cos(invRot));
+
+            // 2. SCALE & ROT (Multitouch)
+            if(pointers.size === 2) {
+                cal.scale = init.scale * (curr.dist / start.dist);
+                cal.rot = init.rot + (curr.ang - start.ang) * (180/Math.PI);
+            }
+        }
+
+        /* --- IMPROVED DRAWING SYSTEM --- */
+        function drawSystem(ctx, pose, w, h, isDebug) {
+            const p = (k) => ({x: pose[k].x*w, y: pose[k].y*h});
+            
+            // Nodes
+            const LS=p('leftShoulder'), RS=p('rightShoulder');
+            const LH=p('leftHip'), RH=p('rightHip');
+            
+            // Midpoints & lengths
+            const mS={x:(LS.x+RS.x)/2, y:(LS.y+RS.y)/2};
+            const mH={x:(LH.x+RH.x)/2, y:(LH.y+RH.y)/2};
+            const torsoLen = Math.hypot(mH.x-mS.x, mH.y-mS.y);
+
+            const draw = (key, start, end, type) => {
+                if(!parts[key]) return;
+                const d = parts[key];
+                const c = calibration[key];
+
+                const dx = end.x - start.x;
+                const dy = end.y - start.y;
+                const len = Math.hypot(dx, dy);
+                const ang = Math.atan2(dy, dx);
+
+                // --- 1. ORIENTATION LOGIC ---
+                let sheetOff = (d.rotationOffset||0)%360;
+                if(sheetOff>180) sheetOff-=360;
+                const isHoriz = Math.abs(sheetOff)>45 && Math.abs(sheetOff)<135;
+                const sW = isHoriz?d.sh:d.sw; // Visual Width (Thickness)
+                const sH = isHoriz?d.sw:d.sh; // Visual Height (Length)
+
+                // --- 2. IMPROVED SCALING ---
+                // Fit Length: Stretch Y to fit bone
+                let fitScale = len / sH;
+                
+                // DAMPENING: If the scale is massive (small sprite on long bone), cap it slightly
+                // to prevent thin sprites from becoming massive wide blocks.
+                // However, we rely on user Calibration.scale to finalize it.
+                const finalScale = fitScale * c.scale;
+
+                // Capture Rotation for Drag Math
+                const totalRot = (ang - Math.PI/2) + (sheetOff*Math.PI/180) + (c.rot*Math.PI/180);
+                if(isDebug) renderRotations[key] = totalRot;
+
+                ctx.save();
+                ctx.translate(start.x, start.y);
+                
+                // Rotate to Bone Angle
+                ctx.rotate(ang - Math.PI/2); 
+
+                // --- 3. ANATOMICAL DEFAULTS (The Fixes) ---
+                // Based on your calibration, we apply offsets BEFORE the manual calibration
+                // so that 0,0 looks better out of the box.
+
+                let defaultOffX = 0;
+                let defaultOffY = 0;
+
+                // A. Shoulder Widening: Push upper arms away from spine
+                if(key === 'leftUpperArm') defaultOffX = -sW * 0.3; // Push Left
+                if(key === 'rightUpperArm') defaultOffX = sW * 0.3; // Push Right
+
+                // B. Joint Overlap: Pull limbs UP to cover the joint node
+                // Lower limbs usually need more overlap (elbows/knees)
+                if(key.includes('Lower')) defaultOffY = -sH * 0.25; // 25% overlap
+                else if(key.includes('Upper')) defaultOffY = -sH * 0.15; // 15% overlap
+
+                // Apply visual rotations
+                ctx.rotate(sheetOff*Math.PI/180);
+                ctx.rotate(c.rot*Math.PI/180);
+                
+                // Translate: (Anatomical Fix) + (Manual Calibration)
+                ctx.translate(defaultOffX + c.x, defaultOffY + c.y);
+
+                if(isDebug && selPart===key) {
+                    ctx.shadowColor="#4ade80"; ctx.shadowBlur=20; ctx.globalAlpha=0.8;
+                }
+
+                // Draw Anchored Top-Center
+                ctx.drawImage(spriteImg, 
+                    d.sx, d.sy, d.sw, d.sh,
+                    -sW*finalScale/2, 0, sW*finalScale, sH*finalScale
+                );
+                ctx.restore();
+            }
+
+            // --- TORSO RENDERING ---
+            if(parts.torso) {
+                const c = calibration.torso;
+                
+                // FIX: Reduced multiplier from 1.0 to 0.65 based on your 0.52 calibration
+                const scale = (torsoLen / parts.torso.sh) * 0.65 * c.scale;
+                
+                if(isDebug) renderRotations['torso'] = c.rot*Math.PI/180;
+
+                ctx.save();
+                ctx.translate(mS.x, mS.y);
+                ctx.rotate(c.rot*Math.PI/180);
+                ctx.translate(c.x, c.y);
+                if(isDebug && selPart==='torso') { ctx.shadowColor="#4ade80"; ctx.shadowBlur=20; }
+                
+                ctx.drawImage(spriteImg, parts.torso.sx, parts.torso.sy, parts.torso.sw, parts.torso.sh,
+                    -parts.torso.sw*scale/2, 0, parts.torso.sw*scale, parts.torso.sh*scale);
+                
+                // HEAD (Relative to Torso)
+                if(parts.head) {
+                    const hC = calibration.head;
+                    if(isDebug) renderRotations['head'] = (c.rot + hC.rot)*Math.PI/180;
+                    
+                    ctx.save();
+                    // FIX: Lifted head higher (-0.5 instead of -0.2) based on your -80 Y offset
+                    ctx.translate(0, -parts.head.sh*scale*0.5); 
+                    ctx.rotate(hC.rot*Math.PI/180);
+                    ctx.translate(hC.x, hC.y);
+                    const hS = scale * hC.scale; // Head matches torso scale usually
+                    
+                    if(isDebug && selPart==='head') ctx.shadowColor="#4ade80"; else ctx.shadowColor="transparent";
+                    
+                    ctx.drawImage(spriteImg, parts.head.sx, parts.head.sy, parts.head.sw, parts.head.sh,
+                        -parts.head.sw*hS/2, -parts.head.sh*hS/2, parts.head.sw*hS, parts.head.sh*hS);
+                    
+                    // CROWN
+                    if(parts.crown) {
+                        const cr = parts.crown;
+                        // FIX: Better default crown placement
+                        ctx.drawImage(spriteImg, cr.sx, cr.sy, cr.sw, cr.sh,
+                        -cr.sw*hS/2, -parts.head.sh*hS/2 - cr.sh*hS, cr.sw*hS, cr.sh*hS);
+                    }
+                    ctx.restore();
+                }
+                ctx.restore();
+            }
+
+            draw('leftUpperArm', p('leftShoulder'), p('leftElbow'), 'bone');
+            draw('leftLowerArm', p('leftElbow'), p('leftWrist'), 'bone');
+            draw('rightUpperArm', p('rightShoulder'), p('rightElbow'), 'bone');
+            draw('rightLowerArm', p('rightElbow'), p('rightWrist'), 'bone');
+            draw('leftUpperLeg', p('leftHip'), p('leftKnee'), 'bone');
+            draw('leftLowerLeg', p('leftKnee'), p('leftAnkle'), 'bone');
+            draw('rightUpperLeg', p('rightHip'), p('rightKnee'), 'bone');
+            draw('rightLowerLeg', p('rightKnee'), p('rightAnkle'), 'bone');
+        }
+
+        function drawSkeleton(ctx, pose, w, h) {
+            const p = (k) => ({x: pose[k].x*w, y: pose[k].y*h});
+            ctx.lineWidth = 3; ctx.strokeStyle = "cyan"; ctx.lineCap = "round";
+            ctx.beginPath();
+            const line = (s,e) => { ctx.moveTo(p(s).x, p(s).y); ctx.lineTo(p(e).x, p(e).y); };
+            line('leftShoulder','rightShoulder'); line('leftHip','rightHip');
+            line('leftShoulder','leftElbow'); line('leftElbow','leftWrist');
+            line('rightShoulder','rightElbow'); line('rightElbow','rightWrist');
+            line('leftHip','leftKnee'); line('leftKnee','leftAnkle');
+            line('rightHip','rightKnee'); line('rightKnee','rightAnkle');
+            ctx.stroke();
+            ctx.fillStyle="red"; 
+            Object.values(pose).forEach(v=>{ctx.beginPath();ctx.arc(v.x*w,v.y*h,4,0,Math.PI*2);ctx.fill();});
+        }
+
+        /* --- EXPORT --- */
+        document.getElementById('copy-calib-btn').addEventListener('click', () => {
+            const txt = JSON.stringify(calibration, null, 2);
+            navigator.clipboard.writeText(txt).then(() => alert("Calibration Copied to Clipboard!"));
+            console.log(txt);
+        });
+
+        /* --- LIVE --- */
+        document.getElementById('finish-btn').addEventListener('click', async () => {
+            document.getElementById('calibration-screen').classList.add('hidden');
+            document.getElementById('app-screen').classList.remove('hidden');
+            
+            const vis = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm");
+            poseLandmarker = await PoseLandmarker.createFromOptions(vis, {
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task`, delegate: "GPU" },
+                runningMode: "VIDEO", numPoses: 1
+            });
+            
+            navigator.mediaDevices.getUserMedia({video:true}).then(s => {
+                video.srcObject = s;
+                video.addEventListener('loadeddata', predict);
+            });
+        });
+
+        let lastT = -1;
+        async function predict() {
+            if(video.currentTime !== lastT) {
+                lastT = video.currentTime;
+                poseLandmarker.detectForVideo(video, performance.now(), res => {
+                    ctx.live.clearRect(0,0,cvs.live.width,cvs.live.height);
+                    if(res.landmarks[0]) {
+                        const lm = res.landmarks[0];
+                        const pose = {
+                            nose: lm[0],
+                            leftShoulder: lm[11], rightShoulder: lm[12],
+                            leftElbow: lm[13],    rightElbow: lm[14],
+                            leftWrist: lm[15],    rightWrist: lm[16],
+                            leftHip: lm[23],      rightHip: lm[24],
+                            leftKnee: lm[25],     rightKnee: lm[26],
+                            leftAnkle: lm[27],    rightAnkle: lm[28]
+                        };
+                        drawSystem(ctx.live, pose, cvs.live.width, cvs.live.height, false);
+                        if(document.getElementById('toggle-skel').innerText.includes('Hide')) {
+                            drawSkeleton(ctx.live, pose, cvs.live.width, cvs.live.height);
+                        }
+                    }
+                });
+            }
+            requestAnimationFrame(predict);
+        }
+        
+        document.getElementById('toggle-skel').onclick = (e) => {
+            e.target.innerText = e.target.innerText.includes('Hide') ? "Show Skeleton" : "Hide Skeleton";
+        };
+
+    </script>
+</body>
+</html>

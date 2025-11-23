@@ -262,7 +262,29 @@
 
             const worldLandmarks = landmarks.map(lm => new THREE.Vector3(lm.x, lm.y, lm.z).sub(landmarks[0]).multiplyScalar(-100));
             
-            character.head.quaternion.slerp(getQuaternion(worldLandmarks[12], worldLandmarks[11]), lerpFactor);
+            // --- New Head Logic ---
+            const pRightEar = worldLandmarks[8];
+            const pLeftEar = worldLandmarks[7];
+            const pRightShoulder = worldLandmarks[12];
+            const pLeftShoulder = worldLandmarks[11];
+
+            const shoulderMid = new THREE.Vector3().lerpVectors(pLeftShoulder, pRightShoulder, 0.5);
+            const earMid = new THREE.Vector3().lerpVectors(pLeftEar, pRightEar, 0.5);
+
+            // Construct the basis vectors for the head's orientation
+            const yAxis = new THREE.Vector3().subVectors(earMid, shoulderMid).normalize(); // Up
+            const xAxis = new THREE.Vector3().subVectors(pRightEar, pLeftEar).normalize(); // Right
+            const zAxis = new THREE.Vector3().crossVectors(xAxis, yAxis).normalize(); // Forward
+
+            // Re-orthogonalize yAxis to ensure the matrix is valid
+            yAxis.crossVectors(zAxis, xAxis).normalize();
+
+            // Create the rotation matrix and apply it
+            const rotationMatrix = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
+            const headQuaternion = new THREE.Quaternion().setFromRotationMatrix(rotationMatrix);
+            character.head.quaternion.slerp(headQuaternion, lerpFactor);
+            // --- End Head Logic ---
+
             character.leftArm.quaternion.slerp(getQuaternion(worldLandmarks[11], worldLandmarks[13]), lerpFactor);
             character.rightArm.quaternion.slerp(getQuaternion(worldLandmarks[12], worldLandmarks[14]), lerpFactor);
             character.leftLeg.quaternion.slerp(getQuaternion(worldLandmarks[23], worldLandmarks[25]), lerpFactor);

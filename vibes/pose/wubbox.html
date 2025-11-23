@@ -49,16 +49,7 @@
     </style>
 </head>
 <body>
-    <div id="setup-screen" class="screen">
-        <h1 style="color:var(--accent); margin-top:0;">3D Pose Animator</h1>
-        <p style="color:#888; max-width: 400px; text-align: center;">Upload a standard 64x64 Minecraft character skin to begin.</p>
-        <div class="input-group">
-            <input type="file" id="skin-input" accept="image/*" style="background:#222; padding:10px; width:100%;">
-        </div>
-        <button id="start-btn">Start Camera</button>
-    </div>
-
-    <div id="live-screen" class="screen hidden">
+    <div id="live-screen" class="screen">
         <div id="live-controls">
             <button class="btn-sm" onclick="location.reload()">Restart</button>
             <button class="btn-sm" id="toggle-skel">Show Skeleton</button>
@@ -97,9 +88,6 @@
                 numPoses: 1,
                 outputSegmentationMasks: false
             });
-
-            document.getElementById('setup-screen').classList.add('hidden');
-            document.getElementById('live-screen').classList.remove('hidden');
 
             navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
                 video.srcObject = stream;
@@ -271,16 +259,17 @@
             const shoulderMid = new THREE.Vector3().lerpVectors(pLeftShoulder, pRightShoulder, 0.5);
             const earMid = new THREE.Vector3().lerpVectors(pLeftEar, pRightEar, 0.5);
 
-            // Construct the basis vectors for the head's orientation
-            const yAxis = new THREE.Vector3().subVectors(earMid, shoulderMid).normalize(); // Up
-            const xAxis = new THREE.Vector3().subVectors(pRightEar, pLeftEar).normalize(); // Right
-            const zAxis = new THREE.Vector3().crossVectors(xAxis, yAxis).normalize(); // Forward
+            const yAxis = new THREE.Vector3().subVectors(earMid, shoulderMid);
+            const xAxis = new THREE.Vector3().subVectors(pRightEar, pLeftEar);
+            
+            // Geometric correction to remove forward tilt
+            const projection = xAxis.clone().multiplyScalar(yAxis.dot(xAxis) / xAxis.lengthSq());
+            const correctedY = yAxis.clone().sub(projection).normalize();
 
-            // Re-orthogonalize yAxis to ensure the matrix is valid
-            yAxis.crossVectors(zAxis, xAxis).normalize();
+            const zAxis = new THREE.Vector3().crossVectors(xAxis, correctedY).normalize();
+            const finalX = new THREE.Vector3().crossVectors(correctedY, zAxis).normalize();
 
-            // Create the rotation matrix and apply it
-            const rotationMatrix = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
+            const rotationMatrix = new THREE.Matrix4().makeBasis(finalX, correctedY, zAxis);
             const headQuaternion = new THREE.Quaternion().setFromRotationMatrix(rotationMatrix);
             character.head.quaternion.slerp(headQuaternion, lerpFactor);
             // --- End Head Logic ---
@@ -344,22 +333,24 @@
         }
 
         // --- UI & EVENTS ---
-        document.getElementById('start-btn').addEventListener('click', () => {
-            const skinFile = document.getElementById('skin-input').files[0];
-            if (!skinFile) return alert("Please select a skin file!");
-
-            const reader = new FileReader();
-            reader.onload = e => {
-                const textureLoader = new THREE.TextureLoader();
-                textureLoader.load(e.target.result, (texture) => {
+        function main() {
+            const textureLoader = new THREE.TextureLoader();
+            textureLoader.load(
+                'steve.webp',
+                (texture) => {
                     setupThreeJS();
                     character = createCharacter(texture);
                     scene.add(character.group);
                     initialize();
-                });
-            };
-            reader.readAsDataURL(skinFile);
-        });
+                },
+                undefined,
+                (err) => {
+                    console.error('Failed to load default skin.', err);
+                    alert('Could not load steve.webp. Please ensure the file is in the same directory.');
+                }
+            );
+        }
+        main();
         
         document.getElementById('toggle-skel').addEventListener('click', (e) => {
             showSkeleton = !showSkeleton;

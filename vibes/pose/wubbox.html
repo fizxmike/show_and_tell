@@ -58,13 +58,8 @@
         <h1 style="color:var(--accent); margin-top:0;">Pose Animator v4</h1>
         
         <div class="input-group">
-            <label style="color:#888;">1. Sprite Sheet</label>
+            <label style="color:#888;">Select Sprite Sheet</label>
             <input type="file" id="file-input" accept="image/*" style="background:#222; padding:10px; width:100%;">
-        </div>
-        
-        <div class="input-group">
-            <label style="color:#888;">2. Data</label>
-            <textarea id="json-input" placeholder="Paste 'const parts = ...'"></textarea>
         </div>
 
         <button id="load-btn">Start Calibration</button>
@@ -123,13 +118,16 @@
         };
 
         /* --- SETUP --- */
-        document.getElementById('load-btn').addEventListener('click', () => {
+        document.getElementById('load-btn').addEventListener('click', async () => {
             const f = document.getElementById('file-input').files[0];
-            const j = document.getElementById('json-input').value;
-            if(!f || !j) return alert("Missing Data");
+            if(!f) return alert("Missing Sprite Sheet");
 
-            try { parts = JSON.parse(j.replace(/const\s+\w+\s*=\s*/, '').replace(/;$/, '')); } 
-            catch(e) { return alert("JSON Error"); }
+            try {
+                const response = await fetch('parts.json');
+                parts = await response.json();
+            } catch(e) {
+                return alert("Error loading parts.json");
+            }
 
             // Init Calibration Defaults
             Object.keys(parts).forEach(k => calibration[k] = { x:0, y:0, rot:0, scale:1.0 });
@@ -468,7 +466,7 @@
             const vis = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm");
             poseLandmarker = await PoseLandmarker.createFromOptions(vis, {
                 baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task`, delegate: "GPU" },
-                runningMode: "VIDEO", numPoses: 1
+                runningMode: "VIDEO", numPoses: 2
             });
             
             navigator.mediaDevices.getUserMedia({video:true}).then(s => {
@@ -483,20 +481,21 @@
                 lastT = video.currentTime;
                 poseLandmarker.detectForVideo(video, performance.now(), res => {
                     ctx.live.clearRect(0,0,cvs.live.width,cvs.live.height);
-                    if(res.landmarks[0]) {
-                        const lm = res.landmarks[0];
-                        const pose = {
-                            nose: lm[0],
-                            leftShoulder: lm[11], rightShoulder: lm[12],
-                            leftElbow: lm[13],    rightElbow: lm[14],
-                            leftWrist: lm[15],    rightWrist: lm[16],
-                            leftHip: lm[23],      rightHip: lm[24],
-                            leftKnee: lm[25],     rightKnee: lm[26],
-                            leftAnkle: lm[27],    rightAnkle: lm[28]
-                        };
-                        drawSystem(ctx.live, pose, cvs.live.width, cvs.live.height, false);
-                        if(document.getElementById('toggle-skel').innerText.includes('Hide')) {
-                            drawSkeleton(ctx.live, pose, cvs.live.width, cvs.live.height);
+                    if (res.landmarks) {
+                        for (const lm of res.landmarks) {
+                            const pose = {
+                                nose: lm[0],
+                                leftShoulder: lm[11], rightShoulder: lm[12],
+                                leftElbow: lm[13],    rightElbow: lm[14],
+                                leftWrist: lm[15],    rightWrist: lm[16],
+                                leftHip: lm[23],      rightHip: lm[24],
+                                leftKnee: lm[25],     rightKnee: lm[26],
+                                leftAnkle: lm[27],    rightAnkle: lm[28]
+                            };
+                            drawSystem(ctx.live, pose, cvs.live.width, cvs.live.height, false);
+                            if(document.getElementById('toggle-skel').innerText.includes('Hide')) {
+                                drawSkeleton(ctx.live, pose, cvs.live.width, cvs.live.height);
+                            }
                         }
                     }
                 });

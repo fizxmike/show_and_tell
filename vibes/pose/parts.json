@@ -1,4 +1,4 @@
-const parts = {
+{
     "head": {
         "sx": 104,
         "sy": 75,
@@ -13,14 +13,14 @@ const parts = {
         "sh": 70,
         "rotationOffset": 1
     },
-    "leftUpperArm": {
+    "leftLowerArm": {
         "sx": 9,
         "sy": 3,
         "sw": 78,
         "sh": 157,
         "rotationOffset": 192
     },
-    "rightUpperArm": {
+    "rightLowerArm": {
         "sx": 263,
         "sy": 139,
         "sw": 57,
@@ -41,14 +41,14 @@ const parts = {
         "sh": 79,
         "rotationOffset": 22
     },
-    "leftLowerArm": {
+    "leftUpperArm": {
         "sx": 69,
         "sy": 107,
         "sw": 27,
         "sh": 56,
         "rotationOffset": 284
     },
-    "rightLowerArm": {
+    "rightUpperArm": {
         "sx": 69,
         "sy": 107,
         "sw": 27,
@@ -76,4 +76,4 @@ const parts = {
         "sh": 27,
         "rotationOffset": 3
     }
-};
+}

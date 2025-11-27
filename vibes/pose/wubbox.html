@@ -5,7 +5,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Pose Animator v5.0 (3D)</title>
     <style>
+        /* 
+         * CSS VARIABLES
+         * Define a color palette for the UI to ensure a consistent theme.
+         * --accent: Highlight color for interactive elements like buttons.
+         * --bg: Background color of the page.
+         * --panel: Background color for UI panels or screens.
+         * --text: Text color.
+         */
         :root { --accent: #4ade80; --bg: #000; --panel: #1a1a1a; --text: #eee; }
+        
+        /* 
+         * GENERAL STYLES
+         * Basic reset for margin and padding.
+         * Sets the background, text color, and default font for the entire page.
+         * Ensures the html and body elements occupy the full viewport height and width.
+         * Hides any potential overflow to prevent scrollbars.
+         */
         html, body {
             margin: 0; padding: 0;
             background: var(--bg); color: var(--text);
@@ -13,131 +29,270 @@
             width: 100%; height: 100%;
             overflow: hidden;
         }
+
+        /* 
+         * SCREEN CONTAINER
+         * A flex container to center its children both horizontally and vertically.
+         * It's positioned absolutely to fill the entire viewport.
+         */
         .screen {
             position: absolute; top: 0; left: 0;
             width: 100%; height: 100%;
             display: flex; flex-direction: column;
             align-items: center; justify-content: center;
         }
+
+        /* 
+         * SETUP SCREEN
+         * Specific styling for the initial setup screen.
+         * A high z-index ensures it appears on top of other elements.
+         */
         #setup-screen { background: var(--panel); z-index: 30; padding: 20px; }
+
+        /* 
+         * INPUT GROUP
+         * A container for form elements like labels and inputs.
+         * Limits the maximum width for better readability on larger screens.
+         */
         .input-group { width: 100%; max-width: 400px; margin-bottom: 15px; }
+
+        /* 
+         * BUTTON STYLES
+         * Defines the appearance of buttons for a consistent look and feel.
+         */
         button {
             padding: 15px; background: var(--accent); color: #000;
             border: none; border-radius: 8px; font-weight: bold;
             width: 100%; max-width: 400px; font-size: 1rem; cursor: pointer;
         }
+
+        /* 
+         * LIVE SCREEN
+         * The main screen for the live animation, positioned below the setup screen.
+         */
         #live-screen { z-index: 10; }
+
+        /* 
+         * LIVE CONTROLS
+         * A container for control buttons during the live session.
+         * Positioned at the top-left corner with a high z-index to stay on top of the video feed.
+         */
         #live-controls { position: absolute; top: 15px; left: 15px; z-index: 50; }
+
+        /* 
+         * SMALL BUTTONS
+         * A smaller variant of the button style for less prominent actions.
+         */
         .btn-sm {
             padding: 8px 12px; font-size: 0.8rem; background: rgba(0,0,0,0.5);
             color: white; border: none; border-radius: 4px;
         }
+
+        /* 
+         * VIDEO ELEMENT
+         * The video element is used to capture the webcam feed but is not displayed to the user.
+         * Its data is processed in the background and rendered on the canvas.
+         */
         video {
             display: none; /* Hidden, we just need its data */
         }
+
+        /* 
+         * CANVAS CONTAINER
+         * A container that holds both the 2D and 3D canvases.
+         * It's positioned to fill the entire viewport.
+         */
         #canvas-container {
             position: absolute; top: 0; left: 0;
             width: 100%; height: 100%;
         }
-        #output_canvas_3d, #output_canvas_2d {
+
+        /* 
+         * CANVAS ELEMENTS
+         * Styles for both the 2D and 3D output canvases.
+         * Positioned absolutely to overlap within the canvas-container.
+         * The `transform: rotateY(180deg)` mirrors the view, so the user's movement
+         * feels natural, like looking in a mirror.
+         */
+        #output_canvas_3d, #video_canvas_2d, #skeleton_canvas_2d {
             position: absolute; top: 0; left: 0;
             width: 100%; height: 100%;
+        }
+
+        #video_canvas_2d, #skeleton_canvas_2d {
             transform: rotateY(180deg); /* Mirror view */
         }
+
+        /* 
+         * Z-INDEX FOR CANVASES
+         * The 3D canvas is placed on top of the 2D canvas.
+         */
         #output_canvas_3d { z-index: 1; }
+        #skeleton_canvas_2d { z-index: 2; }
+
+
+        /* 
+         * HIDDEN UTILITY CLASS
+         * A simple utility class to hide elements.
+         */
         .hidden { display: none; }
     </style>
 </head>
 <body>
+    <!-- 
+      LIVE SCREEN: This is the main view where the animation happens.
+    -->
     <div id="live-screen" class="screen">
+        <!-- 
+          LIVE CONTROLS: Buttons for user interaction during the live session.
+        -->
         <div id="live-controls">
             <button class="btn-sm" onclick="location.reload()">Restart</button>
             <button class="btn-sm" id="toggle-skel">Show Skeleton</button>
         </div>
+        <!-- 
+          WEBCAM: The video element for capturing the webcam feed. It's not visible.
+        -->
         <video id="webcam" autoplay playsinline></video>
+        <!-- 
+          CANVAS CONTAINER: Holds the canvases for rendering the output.
+        -->
         <div id="canvas-container">
-            <canvas id="output_canvas_2d"></canvas>
+            <!-- 2D Canvas: Used for drawing the video feed. -->
+            <canvas id="video_canvas_2d"></canvas>
+            <!-- 3D Canvas: Used for rendering the 3D character. -->
             <canvas id="output_canvas_3d"></canvas>
+            <!-- 2D Canvas: Used for drawing the pose skeleton. -->
+            <canvas id="skeleton_canvas_2d"></canvas>
         </div>
     </div>
 
     <script type="module">
+        // Import necessary modules from external libraries.
         import * as THREE from "https://cdn.skypack.dev/three@0.132.2";
         import { PoseLandmarker, FilesetResolver } from "https://cdn.skypack.dev/@mediapipe/tasks-vision@0.10.0";
 
-        let poseLandmarker;
-        let scene, camera, renderer;
-        let character;
-        let showSkeleton = false;
+        // --- GLOBAL VARIABLES ---
+        let poseLandmarker; // The MediaPipe PoseLandmarker instance.
+        let scene, camera, renderer; // Three.js components.
+        let character; // The 3D character model.
+        let showSkeleton = false; // Flag to control the visibility of the pose skeleton.
         
+        // --- DOM ELEMENT REFERENCES ---
         const video = document.getElementById('webcam');
-        const canvas2D = document.getElementById('output_canvas_2d');
+        const canvas2D = document.getElementById('video_canvas_2d');
         const ctx2D = canvas2D.getContext('2d');
+
+        const canvas2D_skeleton = document.getElementById('skeleton_canvas_2d');
+        const ctx2D_skeleton = canvas2D_skeleton.getContext('2d');
         
+        // --- VIEWPORT & CAMERA VARIABLES ---
         let viewWidth, viewHeight, visibleWidth, visibleHeight;
 
         // --- CORE LOGIC ---
+
+        /**
+         * Initializes the MediaPipe PoseLandmarker.
+         * This function sets up the pose detection model.
+         */
         async function initialize() {
+            // Create a FilesetResolver to locate the necessary model files.
             const vis = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm");
+            
+            // Create the PoseLandmarker instance with specific options.
             poseLandmarker = await PoseLandmarker.createFromOptions(vis, {
                 baseOptions: {
+                    // Path to the pose landmarker model.
                     modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task`,
+                    // Use GPU for faster processing.
                     delegate: "GPU"
                 },
-                runningMode: "VIDEO",
-                numPoses: 1,
-                outputSegmentationMasks: false
+                runningMode: "VIDEO", // Process a continuous video stream.
+                numPoses: 1, // Detect only one person.
+                outputSegmentationMasks: false // Do not output segmentation masks.
             });
 
+            // Get access to the user's webcam.
             navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
                 video.srcObject = stream;
+                // Start the prediction loop once the video data is loaded.
                 video.addEventListener('loadeddata', predict);
             });
         }
 
+        /**
+         * Sets up the Three.js scene, camera, and renderer.
+         */
         function setupThreeJS() {
             const container = document.getElementById('canvas-container');
+            // Create a WebGL renderer and attach it to the 3D canvas.
             renderer = new THREE.WebGLRenderer({
                 canvas: document.getElementById('output_canvas_3d'),
-                alpha: true
+                alpha: true // Make the canvas transparent to see the 2D canvas underneath.
             });
-            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setPixelRatio(window.devicePixelRatio); // Use the device's pixel ratio for crisp rendering.
             
+            // Create a new Three.js scene.
             scene = new THREE.Scene();
-            camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
-            camera.position.z = 100;
             
-            const light = new THREE.AmbientLight(0xffffff, 1.5);
+            // Create a perspective camera.
+            camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 100; // Position the camera.
+            
+            // Add lighting to the scene.
+            const light = new THREE.AmbientLight(0xffffff, 1.5); // Soft ambient light.
             scene.add(light);
-            const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+            const dirLight = new THREE.DirectionalLight(0xffffff, 1); // Directional light for highlights.
             dirLight.position.set(5, 10, 7.5);
             scene.add(dirLight);
 
+            // Handle window resizing.
             handleResize();
         }
         
         // --- CHARACTER CREATION ---
+
+        /**
+         * Applies a Minecraft skin texture to the character model.
+         * @param {object} character - The character object with its parts.
+         * @param {THREE.Texture} texture - The skin texture to apply.
+         */
         function applySkin(character, texture) {
+            // Use NearestFilter for a pixelated, Minecraft-like appearance.
             texture.magFilter = THREE.NearestFilter;
             texture.minFilter = THREE.NearestFilter;
 
+            /**
+             * Creates an array of materials for each face of a box geometry.
+             * @param {Array} uvs - An array of UV coordinates for each face.
+             * @returns {Array<THREE.MeshBasicMaterial>} - An array of materials.
+             */
             const createMaterial = (uvs) => {
                 const materials = [];
-                for (const uv of uvs) {
+                // The order of faces in a BoxGeometry is: Right, Left, Top, Bottom, Front, Back
+                for (let i = 0; i < uvs.length; i++) {
+                     const uv = uvs[i];
                      const canvas = document.createElement('canvas');
                      const context = canvas.getContext('2d');
                      canvas.width = uv.w;
                      canvas.height = uv.h;
+                     
+                     // Draw the specific part of the texture onto the canvas.
                      context.drawImage(texture.image, uv.x, uv.y, uv.w, uv.h, 0, 0, uv.w, uv.h);
+                     
+                     // Create a new texture from the canvas.
                      const newTexture = new THREE.CanvasTexture(canvas);
                      newTexture.magFilter = THREE.NearestFilter;
                      newTexture.minFilter = THREE.NearestFilter;
+                     
+                     // Create a material with the new texture.
                      materials.push(new THREE.MeshBasicMaterial({ map: newTexture, transparent: true }));
                 }
                 return materials;
             };
 
-            // UV mapping for a standard 64x64 Minecraft skin
+            // UV mapping for a standard 64x64 Minecraft skin.
+            // These coordinates define which part of the texture image is used for each face of the character's body parts.
             // Order: Right, Left, Top, Bottom, Front, Back
             const headUVs = [
                 { x: 0, y: 8, w: 8, h: 8 }, { x: 16, y: 8, w: 8, h: 8 },
@@ -160,6 +315,7 @@
                  { x: 4, y: 20, w: 4, h: 12 }, { x: 12, y: 20, w: 4, h: 12 }
             ];
 
+            // Apply the materials to each part of the character.
             character.head.material = createMaterial(headUVs);
             character.torso.material = createMaterial(torsoUVs);
             character.leftArm.material = createMaterial(armUVs);
@@ -168,28 +324,42 @@
             character.rightLeg.material = createMaterial(legUVs);
         }
 
+        /**
+         * Creates the 3D character model.
+         * @param {THREE.Texture} skinTexture - The texture to apply to the character.
+         * @returns {object} - An object containing the character's parts.
+         */
         function createCharacter(skinTexture) {
             const group = new THREE.Group();
             
-            // Define geometry with adjusted pivot points for proper rotation
+            /**
+             * Creates a part of the character's body.
+             * @param {number} w - Width of the part.
+             * @param {number} h - Height of the part.
+             * @param {number} d - Depth of the part.
+             * @param {number} pivotY - The Y-coordinate of the pivot point.
+             * @returns {THREE.Mesh} - The created mesh.
+             */
             const createPart = (w, h, d, pivotY) => {
                 const geom = new THREE.BoxGeometry(w, h, d);
+                // Adjust the geometry's pivot point for proper rotation.
                 geom.translate(0, -h / 2 + pivotY, 0);
                 return new THREE.Mesh(geom);
             };
 
+            // Create each part of the character.
             const head = createPart(8, 8, 8, 8);
             const torso = createPart(8, 12, 4, 12);
-            const leftArm = createPart(4, 12, 4, 12);
-            const rightArm = createPart(4, 12, 4, 12);
-            const leftLeg = createPart(4, 12, 4, 12);
-            const rightLeg = createPart(4, 12, 4, 12);
+            const leftArm = createPart(4, 12, 4, 0);
+            const rightArm = createPart(4, 12, 4, 0);
+            const leftLeg = createPart(4, 12, 4, 0);
+            const rightLeg = createPart(4, 12, 4, 0);
             
-            // Assemble the character
+            // Assemble the character by adding the parts to groups.
             const body = new THREE.Group();
             body.add(torso);
             body.add(head);
-            head.position.y = 12; // Top of torso
+            head.position.y = 12; // Position the head on top of the torso.
             
             const characterContainer = new THREE.Group();
             characterContainer.add(body);
@@ -198,149 +368,198 @@
             characterContainer.add(leftLeg);
             characterContainer.add(rightLeg);
 
-            // Set initial positions
+            // Set the initial positions of the limbs.
             leftArm.position.set(-6, 12, 0);
             rightArm.position.set(6, 12, 0);
             leftLeg.position.set(-2, 0, 0);
             rightLeg.position.set(2, 0, 0);
             
+            // Create an object to hold all the parts.
             const parts = { head, torso, leftArm, rightArm, leftLeg, rightLeg, group: characterContainer };
+            // Apply the skin texture to the character.
             applySkin(parts, skinTexture);
 
             return parts;
         }
 
         // --- POSE & ANIMATION ---
+
+        /**
+         * Updates the character's pose based on the detected landmarks.
+         * @param {Array} landmarks - The pose landmarks detected by MediaPipe.
+         */
         function updatePose(landmarks) {
-            if (!character || !visibleHeight) return;
-            const lerpFactor = 0.5;
+            if (!character || !visibleHeight) return; // Exit if the character or camera dimensions are not ready.
+            const lerpFactor = 0.5; // Smoothing factor for scaling.
 
             // --- 1. SCALE ---
-            // Calculate vertical size of the pose in normalized coordinates
-            const poseTop = landmarks[0].y; // Nose
-            const poseBottom = (landmarks[27].y + landmarks[28].y) / 2; // Midpoint of ankles
+            // Calculate the vertical size of the detected pose in normalized coordinates.
+            const poseTop = landmarks[0].y; // Nose landmark.
+            const poseBottom = (landmarks[27].y + landmarks[28].y) / 2; // Midpoint of ankles.
             const poseHeightNorm = Math.abs(poseBottom - poseTop);
 
-            // Total height of the 3D model is 32 units (leg 12 + torso 12 + head 8)
+            // The total height of the 3D model is 32 units (leg 12 + torso 12 + head 8).
             const modelHeight = 32;
+            // Calculate the desired height of the model in the 3D scene.
             const desiredHeight = poseHeightNorm * visibleHeight;
+            // Calculate the scale factor.
             const scale = desiredHeight / modelHeight;
+            // Smoothly scale the character.
             character.group.scale.lerp(new THREE.Vector3(scale, scale, scale), lerpFactor);
 
             // --- 2. POSITION ---
-            // Find the center of the body in normalized coordinates
+            // Find the center of the body in normalized coordinates.
             const shoulderMidY = (landmarks[11].y + landmarks[12].y) / 2;
             const hipMidX = (landmarks[23].x + landmarks[24].x) / 2;
             const hipMidY = (landmarks[23].y + landmarks[24].y) / 2;
             const bodyCenterY = (shoulderMidY + hipMidY) / 2;
 
-            // Convert normalized coordinates to world coordinates
-            // Negate X because the view is mirrored
+            // Convert normalized coordinates to world coordinates for positioning.
             const targetX = -(hipMidX - 0.5) * visibleWidth;
             const targetY = -(bodyCenterY - 0.5) * visibleHeight;
             
-            // We position the group, which contains all parts
+            // Smoothly move the character to the target position.
             character.group.position.lerp(new THREE.Vector3(targetX, targetY, 0), lerpFactor);
             
             // --- 3. ROTATION ---
+            /**
+             * Calculates a quaternion for rotation between two points.
+             * @param {THREE.Vector3} p1 - The starting point.
+             * @param {THREE.Vector3} p2 - The ending point.
+             * @returns {THREE.Quaternion} - The calculated quaternion.
+             */
             const getQuaternion = (p1, p2) => {
                 const dir = new THREE.Vector3().subVectors(p2, p1).normalize();
                 return new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
             };
 
+            // Convert landmarks to world coordinates relative to the nose.
             const worldLandmarks = landmarks.map(lm => new THREE.Vector3(lm.x, lm.y, lm.z).sub(landmarks[0]).multiplyScalar(-100));
             
-            // --- New Head Logic ---
+            // --- New Head Logic for more accurate rotation ---
             const pRightEar = worldLandmarks[8];
             const pLeftEar = worldLandmarks[7];
+            const pRightEye = worldLandmarks[2];
+            const pLeftEye = worldLandmarks[5];
             const pRightShoulder = worldLandmarks[12];
             const pLeftShoulder = worldLandmarks[11];
 
             const shoulderMid = new THREE.Vector3().lerpVectors(pLeftShoulder, pRightShoulder, 0.5);
             const earMid = new THREE.Vector3().lerpVectors(pLeftEar, pRightEar, 0.5);
+            const eyeMid = new THREE.Vector3().lerpVectors(pLeftEye, pRightEye, 0.5);
 
-            const yAxis = new THREE.Vector3().subVectors(earMid, shoulderMid);
-            const xAxis = new THREE.Vector3().subVectors(pRightEar, pLeftEar);
+            // Define the head's local axes.
+            const xAxis = new THREE.Vector3().subVectors(pRightEar, pLeftEar).normalize(); // Left-Right
+            const yAxis = new THREE.Vector3().subVectors(earMid, shoulderMid).normalize(); // Up
             
-            // Geometric correction to remove forward tilt
-            const projection = xAxis.clone().multiplyScalar(yAxis.dot(xAxis) / xAxis.lengthSq());
-            const correctedY = yAxis.clone().sub(projection).normalize();
+            const towardEyes = new THREE.Vector3().subVectors(eyeMid, earMid);
+            const projection = xAxis.clone().multiplyScalar(towardEyes.dot(xAxis));
+            const zAxis = towardEyes.clone().sub(projection).normalize(); // Forward direction
 
-            const zAxis = new THREE.Vector3().crossVectors(xAxis, correctedY).normalize();
-            const finalX = new THREE.Vector3().crossVectors(correctedY, zAxis).normalize();
-
-            const rotationMatrix = new THREE.Matrix4().makeBasis(finalX, correctedY, zAxis);
+            // Create a rotation matrix from the axes and set the head's quaternion.
+            const rotationMatrix = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
             const headQuaternion = new THREE.Quaternion().setFromRotationMatrix(rotationMatrix);
             character.head.quaternion.slerp(headQuaternion, lerpFactor);
             // --- End Head Logic ---
 
-            character.leftArm.quaternion.slerp(getQuaternion(worldLandmarks[11], worldLandmarks[13]), lerpFactor);
-            character.rightArm.quaternion.slerp(getQuaternion(worldLandmarks[12], worldLandmarks[14]), lerpFactor);
-            character.leftLeg.quaternion.slerp(getQuaternion(worldLandmarks[23], worldLandmarks[25]), lerpFactor);
-            character.rightLeg.quaternion.slerp(getQuaternion(worldLandmarks[24], worldLandmarks[26]), lerpFactor);
+            // Rotate the limbs based on landmark positions.
+            character.leftArm.quaternion.slerp(getQuaternion(worldLandmarks[13], worldLandmarks[11]), lerpFactor);
+            character.rightArm.quaternion.slerp(getQuaternion(worldLandmarks[14], worldLandmarks[12]), lerpFactor);
+            character.leftLeg.quaternion.slerp(getQuaternion(worldLandmarks[25], worldLandmarks[23]), lerpFactor);
+            character.rightLeg.quaternion.slerp(getQuaternion(worldLandmarks[26], worldLandmarks[24]), lerpFactor);
         }
         
         // --- RENDER LOOP & DRAWING ---
-        let lastTime = -1;
+        let lastTime = -1; // Keep track of the last video time.
+        /**
+         * The main prediction and rendering loop.
+         */
         async function predict() {
             const w = video.videoWidth;
             const h = video.videoHeight;
+            // Resize the 2D canvas if the video dimensions have changed.
             if(w > 0 && (canvas2D.width !== w || canvas2D.height !== h)) {
                 canvas2D.width = w;
                 canvas2D.height = h;
             }
 
+            if(w > 0 && (canvas2D_skeleton.width !== w || canvas2D_skeleton.height !== h)) {
+                canvas2D_skeleton.width = w;
+                canvas2D_skeleton.height = h;
+            }
+
+            // Only run detection if the video has advanced to a new frame.
             if (video.currentTime !== lastTime) {
                 lastTime = video.currentTime;
+                // Detect pose landmarks in the current video frame.
                 const results = poseLandmarker.detectForVideo(video, performance.now());
                 
+                // Clear and redraw the 2D canvas.
                 ctx2D.clearRect(0, 0, w, h);
+                ctx2D_skeleton.clearRect(0, 0, w, h);
                 ctx2D.drawImage(video, 0, 0, w, h);
                 
+                // If landmarks are detected, update the pose and draw the skeleton if enabled.
                 if (results.landmarks && results.landmarks[0]) {
-                    if(showSkeleton) drawPoseSkeleton(results.landmarks[0]);
+                    if(showSkeleton){
+                        drawPoseSkeleton(results.landmarks[0]);
+                    } 
                     updatePose(results.landmarks[0]);
                 }
             }
 
+            // Render the 3D scene.
             if(renderer && scene && camera) {
                 renderer.render(scene, camera);
             }
+            // Request the next frame of the animation loop.
             requestAnimationFrame(predict);
         }
 
+        /**
+         * Draws the pose skeleton on the 2D canvas.
+         * @param {Array} landmarks - The pose landmarks to draw.
+         */
         function drawPoseSkeleton(landmarks) {
-            ctx2D.lineWidth = 3;
-            ctx2D.strokeStyle = 'rgba(0, 255, 255, 0.7)';
+            ctx2D_skeleton.lineWidth = 3;
+            ctx2D_skeleton.strokeStyle = 'rgba(0, 255, 255, 0.7)';
             
-            // MediaPipe's standard connections
+            // Draw lines connecting the landmarks.
             const connections = PoseLandmarker.POSE_CONNECTIONS;
             for (const connection of connections) {
                 const start = landmarks[connection.start];
                 const end = landmarks[connection.end];
-                ctx2D.beginPath();
-                ctx2D.moveTo(start.x * canvas2D.width, start.y * canvas2D.height);
-                ctx2D.lineTo(end.x * canvas2D.width, end.y * canvas2D.height);
-                ctx2D.stroke();
+                ctx2D_skeleton.beginPath();
+                ctx2D_skeleton.moveTo(start.x * canvas2D_skeleton.width, start.y * canvas2D_skeleton.height);
+                ctx2D_skeleton.lineTo(end.x * canvas2D_skeleton.width, end.y * canvas2D_skeleton.height);
+                ctx2D_skeleton.stroke();
             }
 
-            ctx2D.fillStyle = 'rgba(255, 0, 0, 0.8)';
+            // Draw dots for each landmark.
+            ctx2D_skeleton.fillStyle = 'rgba(255, 0, 0, 0.8)';
             for (const landmark of landmarks) {
-                ctx2D.beginPath();
-                ctx2D.arc(landmark.x * canvas2D.width, landmark.y * canvas2D.height, 4, 0, 2 * Math.PI);
-                ctx2D.fill();
+                ctx2D_skeleton.beginPath();
+                ctx2D_skeleton.arc(landmark.x * canvas2D_skeleton.width, landmark.y * canvas2D_skeleton.height, 4, 0, 2 * Math.PI);
+                ctx2D_skeleton.fill();
             }
         }
 
         // --- UI & EVENTS ---
+
+        /**
+         * The main function to start the application.
+         */
         function main() {
             const textureLoader = new THREE.TextureLoader();
+            // Load the default skin texture.
             textureLoader.load(
                 'steve.webp',
                 (texture) => {
+                    // Once the texture is loaded, set up the 3D scene and create the character.
                     setupThreeJS();
                     character = createCharacter(texture);
                     scene.add(character.group);
+                    // Initialize the pose landmarker.
                     initialize();
                 },
                 undefined,
@@ -350,27 +569,34 @@
                 }
             );
         }
-        main();
+        main(); // Start the application.
         
+        // Event listener for the "Show/Hide Skeleton" button.
         document.getElementById('toggle-skel').addEventListener('click', (e) => {
             showSkeleton = !showSkeleton;
             e.target.innerText = showSkeleton ? "Hide Skeleton" : "Show Skeleton";
         });
 
+        /**
+         * Handles window resize events to keep the camera and renderer updated.
+         */
         function handleResize() {
             viewWidth = window.innerWidth;
             viewHeight = window.innerHeight;
             if(camera && renderer) {
+                // Update camera aspect ratio and projection matrix.
                 camera.aspect = viewWidth / viewHeight;
                 camera.updateProjectionMatrix();
+                // Update renderer size.
                 renderer.setSize(viewWidth, viewHeight);
 
-                // Recalculate visible plane size at Z=0
+                // Recalculate the visible plane size at Z=0 for accurate positioning.
                 const fovInRadians = camera.fov * (Math.PI / 180);
                 visibleHeight = 2 * Math.tan(fovInRadians / 2) * camera.position.z;
                 visibleWidth = visibleHeight * camera.aspect;
             }
         }
+        // Add the resize event listener.
         window.addEventListener('resize', handleResize);
 
     </script>

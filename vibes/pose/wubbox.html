@@ -189,6 +189,31 @@
         // --- VIEWPORT & CAMERA VARIABLES ---
         let viewWidth, viewHeight, visibleWidth, visibleHeight;
 
+        // --- LANDMARK CONSTANTS ---
+        // Named constants for MediaPipe PoseLandmarker indices used in this file.
+        // Use these instead of magic numbers when indexing `landmarks` or `worldLandmarks`.
+        // If you need the full mapping for all PoseLandmarker indices, check
+        // the MediaPipe BlazePose / PoseLandmarker documentation.
+        // https://developers.google.com/static/ml-kit/images/vision/pose-detection/landmarks-fixed.png
+
+        const NOSE = 0;
+        const RIGHT_EYE = 2;
+        const LEFT_EYE = 5;
+        const LEFT_EAR = 7;
+        const RIGHT_EAR = 8;
+        const LEFT_SHOULDER = 11;
+        const RIGHT_SHOULDER = 12;
+        const LEFT_ELBOW = 13;
+        const RIGHT_ELBOW = 14;
+        const LEFT_WRIST = 15;
+        const RIGHT_WRIST = 16;
+        const LEFT_HIP = 23;
+        const RIGHT_HIP = 24;
+        const LEFT_KNEE = 25;
+        const RIGHT_KNEE = 26;
+        const LEFT_ANKLE = 27;
+        const RIGHT_ANKLE = 28;
+
         // --- CORE LOGIC ---
 
         /**
@@ -394,29 +419,25 @@
 
             // --- 1. SCALE ---
             // Calculate the vertical size of the detected pose in normalized coordinates.
-            const poseTop = landmarks[0].y; // Nose landmark.
-            const poseBottom = (landmarks[27].y + landmarks[28].y) / 2; // Midpoint of ankles.
+            const poseTop = (landmarks[LEFT_EYE].y + landmarks[RIGHT_EYE].y) / 2; // approximate top using eyes
+            const poseBottom = (landmarks[LEFT_ANKLE].y + landmarks[RIGHT_ANKLE].y) / 2; // Midpoint of ankles.
             const poseHeightNorm = Math.abs(poseBottom - poseTop);
 
             // The total height of the 3D model is 32 units (leg 12 + torso 12 + head 8).
             const modelHeight = 32;
-            // Calculate the desired height of the model in the 3D scene.
-            const desiredHeight = poseHeightNorm * visibleHeight;
-            // Calculate the scale factor.
-            const scale = desiredHeight / modelHeight;
+            // Calculate the scale factor (ratio of pixel height to pose height times world height).
+            const scale = (poseHeightNorm / modelHeight) * visibleHeight;
             // Smoothly scale the character.
             character.group.scale.lerp(new THREE.Vector3(scale, scale, scale), lerpFactor);
 
             // --- 2. POSITION ---
-            // Find the center of the body in normalized coordinates.
-            const shoulderMidY = (landmarks[11].y + landmarks[12].y) / 2;
-            const hipMidX = (landmarks[23].x + landmarks[24].x) / 2;
-            const hipMidY = (landmarks[23].y + landmarks[24].y) / 2;
-            const bodyCenterY = (shoulderMidY + hipMidY) / 2;
+            // Find the horizontal center of the body for X positioning.
+            const hipMidX = (landmarks[LEFT_HIP].x + landmarks[RIGHT_HIP].x) / 2;
 
             // Convert normalized coordinates to world coordinates for positioning.
+            // The character's Y position is anchored to the ankles to align it with the ground.
             const targetX = -(hipMidX - 0.5) * visibleWidth;
-            const targetY = -(bodyCenterY - 0.5) * visibleHeight;
+            const targetY = -((poseTop + poseBottom) / 2 - 0.5) * visibleHeight;
             
             // Smoothly move the character to the target position.
             character.group.position.lerp(new THREE.Vector3(targetX, targetY, 0), lerpFactor);
@@ -434,15 +455,15 @@
             };
 
             // Convert landmarks to world coordinates relative to the nose.
-            const worldLandmarks = landmarks.map(lm => new THREE.Vector3(lm.x, lm.y, lm.z).sub(landmarks[0]).multiplyScalar(-100));
+            const worldLandmarks = landmarks.map(lm => new THREE.Vector3(lm.x, lm.y, lm.z).sub(landmarks[NOSE]).multiplyScalar(-100));
             
             // --- New Head Logic for more accurate rotation ---
-            const pRightEar = worldLandmarks[8];
-            const pLeftEar = worldLandmarks[7];
-            const pRightEye = worldLandmarks[2];
-            const pLeftEye = worldLandmarks[5];
-            const pRightShoulder = worldLandmarks[12];
-            const pLeftShoulder = worldLandmarks[11];
+            const pRightEar = worldLandmarks[RIGHT_EAR];
+            const pLeftEar = worldLandmarks[LEFT_EAR];
+            const pRightEye = worldLandmarks[RIGHT_EYE];
+            const pLeftEye = worldLandmarks[LEFT_EYE];
+            const pRightShoulder = worldLandmarks[RIGHT_SHOULDER];
+            const pLeftShoulder = worldLandmarks[LEFT_SHOULDER];
 
             const shoulderMid = new THREE.Vector3().lerpVectors(pLeftShoulder, pRightShoulder, 0.5);
             const earMid = new THREE.Vector3().lerpVectors(pLeftEar, pRightEar, 0.5);
@@ -463,30 +484,23 @@
             // --- End Head Logic ---
 
             // Rotate the limbs based on landmark positions.
-            character.leftArm.quaternion.slerp(getQuaternion(worldLandmarks[13], worldLandmarks[11]), lerpFactor);
-            character.rightArm.quaternion.slerp(getQuaternion(worldLandmarks[14], worldLandmarks[12]), lerpFactor);
-            character.leftLeg.quaternion.slerp(getQuaternion(worldLandmarks[25], worldLandmarks[23]), lerpFactor);
-            character.rightLeg.quaternion.slerp(getQuaternion(worldLandmarks[26], worldLandmarks[24]), lerpFactor);
+            character.leftArm.quaternion.slerp(getQuaternion(worldLandmarks[LEFT_WRIST], worldLandmarks[LEFT_SHOULDER]), lerpFactor);
+            character.rightArm.quaternion.slerp(getQuaternion(worldLandmarks[RIGHT_WRIST], worldLandmarks[RIGHT_SHOULDER]), lerpFactor);
+            character.leftLeg.quaternion.slerp(getQuaternion(worldLandmarks[LEFT_ANKLE], worldLandmarks[LEFT_HIP]), lerpFactor);
+            character.rightLeg.quaternion.slerp(getQuaternion(worldLandmarks[RIGHT_ANKLE], worldLandmarks[RIGHT_HIP]), lerpFactor);
         }
         
         // --- RENDER LOOP & DRAWING ---
         let lastTime = -1; // Keep track of the last video time.
+        // Keep the last computed destination rectangle where the video was drawn
+        // so the skeleton can be mapped to the same region (handles letterboxing).
+        let lastVideoDraw = { x: 0, y: 0, w: viewWidth || 0, h: viewHeight || 0 };
         /**
          * The main prediction and rendering loop.
          */
         async function predict() {
             const w = video.videoWidth;
             const h = video.videoHeight;
-            // Resize the 2D canvas if the video dimensions have changed.
-            if(w > 0 && (canvas2D.width !== w || canvas2D.height !== h)) {
-                canvas2D.width = w;
-                canvas2D.height = h;
-            }
-
-            if(w > 0 && (canvas2D_skeleton.width !== w || canvas2D_skeleton.height !== h)) {
-                canvas2D_skeleton.width = w;
-                canvas2D_skeleton.height = h;
-            }
 
             // Only run detection if the video has advanced to a new frame.
             if (video.currentTime !== lastTime) {
@@ -494,10 +508,55 @@
                 // Detect pose landmarks in the current video frame.
                 const results = poseLandmarker.detectForVideo(video, performance.now());
                 
-                // Clear and redraw the 2D canvas.
-                ctx2D.clearRect(0, 0, w, h);
-                ctx2D_skeleton.clearRect(0, 0, w, h);
-                ctx2D.drawImage(video, 0, 0, w, h);
+                // Clear and redraw the 2D canvas using letterbox / contain behaviour
+                // so the video keeps its aspect ratio and is centered. We use CSS
+                // pixel coordinates (viewWidth/viewHeight) because ctx transforms
+                // were set in handleResize.
+                ctx2D.clearRect(0, 0, viewWidth, viewHeight);
+                ctx2D_skeleton.clearRect(0, 0, viewWidth, viewHeight);
+
+                // If video dimensions are available, compute the scaled destination
+                // rectangle that fits the video into the canvas while preserving
+                // aspect ratio (letterboxing/pillarboxing as needed).
+                const vw = video.videoWidth || w;
+                const vh = video.videoHeight || h;
+                if (vw > 0 && vh > 0) {
+                    const canvasW = viewWidth;
+                    const canvasH = viewHeight;
+                    const videoAspect = vw / vh;
+                    const canvasAspect = canvasW / canvasH;
+
+                    let destW, destH;
+                    if (videoAspect > canvasAspect) {
+                        // Video is wider than canvas -> fit width, letterbox vertically
+                        destW = canvasW;
+                        destH = canvasW / videoAspect;
+                    } else {
+                        // Video is taller (or equal) -> fit height, pillarbox horizontally
+                        destH = canvasH;
+                        destW = canvasH * videoAspect;
+                    }
+                    const destX = (canvasW - destW) / 2;
+                    const destY = (canvasH - destH) / 2;
+
+                    // Save for skeleton mapping
+                    lastVideoDraw.x = destX;
+                    lastVideoDraw.y = destY;
+                    lastVideoDraw.w = destW;
+                    lastVideoDraw.h = destH;
+
+                    // Fill background (black) for letterbox bars then draw the video.
+                    ctx2D.fillStyle = 'black';
+                    ctx2D.fillRect(0, 0, canvasW, canvasH);
+                    ctx2D.drawImage(video, 0, 0, vw, vh, destX, destY, destW, destH);
+                } else {
+                    // Fallback: draw full area if video size is not known yet
+                    ctx2D.drawImage(video, 0, 0, viewWidth, viewHeight);
+                    lastVideoDraw.x = 0;
+                    lastVideoDraw.y = 0;
+                    lastVideoDraw.w = viewWidth;
+                    lastVideoDraw.h = viewHeight;
+                }
                 
                 // If landmarks are detected, update the pose and draw the skeleton if enabled.
                 if (results.landmarks && results.landmarks[0]) {
@@ -526,12 +585,19 @@
             
             // Draw lines connecting the landmarks.
             const connections = PoseLandmarker.POSE_CONNECTIONS;
+            // Map normalized landmark coordinates into the video draw region
+            // (handles letterboxing). Use lastVideoDraw which is kept in
+            // CSS-pixel coordinates (because contexts were scaled by dpr).
+            const drawW = lastVideoDraw.w || canvas2D_skeleton.clientWidth || viewWidth;
+            const drawH = lastVideoDraw.h || canvas2D_skeleton.clientHeight || viewHeight;
+            const offsetX = lastVideoDraw.x || 0;
+            const offsetY = lastVideoDraw.y || 0;
             for (const connection of connections) {
                 const start = landmarks[connection.start];
                 const end = landmarks[connection.end];
                 ctx2D_skeleton.beginPath();
-                ctx2D_skeleton.moveTo(start.x * canvas2D_skeleton.width, start.y * canvas2D_skeleton.height);
-                ctx2D_skeleton.lineTo(end.x * canvas2D_skeleton.width, end.y * canvas2D_skeleton.height);
+                ctx2D_skeleton.moveTo(offsetX + start.x * drawW, offsetY + start.y * drawH);
+                ctx2D_skeleton.lineTo(offsetX + end.x * drawW, offsetY + end.y * drawH);
                 ctx2D_skeleton.stroke();
             }
 
@@ -539,7 +605,7 @@
             ctx2D_skeleton.fillStyle = 'rgba(255, 0, 0, 0.8)';
             for (const landmark of landmarks) {
                 ctx2D_skeleton.beginPath();
-                ctx2D_skeleton.arc(landmark.x * canvas2D_skeleton.width, landmark.y * canvas2D_skeleton.height, 4, 0, 2 * Math.PI);
+                ctx2D_skeleton.arc(offsetX + landmark.x * drawW, offsetY + landmark.y * drawH, 4, 0, 2 * Math.PI);
                 ctx2D_skeleton.fill();
             }
         }
@@ -595,6 +661,22 @@
                 visibleHeight = 2 * Math.tan(fovInRadians / 2) * camera.position.z;
                 visibleWidth = visibleHeight * camera.aspect;
             }
+            // Configure 2D canvases to match the display size but keep a high-resolution
+            // drawing buffer using devicePixelRatio. We'll draw using CSS pixel
+            // coordinates (0..viewWidth / 0..viewHeight) by setting the canvas
+            // transform to scale by `dpr`.
+            const dpr = window.devicePixelRatio || 1;
+            // Set internal pixel size for crisp rendering, and keep CSS size equal to viewport.
+            [canvas2D, canvas2D_skeleton].forEach(c => {
+                if (!c) return;
+                c.style.width = viewWidth + 'px';
+                c.style.height = viewHeight + 'px';
+                c.width = Math.max(1, Math.floor(viewWidth * dpr));
+                c.height = Math.max(1, Math.floor(viewHeight * dpr));
+            });
+            // Set drawing scale so further drawing uses CSS pixel coordinates.
+            ctx2D.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx2D_skeleton.setTransform(dpr, 0, 0, dpr, 0, 0);
         }
         // Add the resize event listener.
         window.addEventListener('resize', handleResize);
